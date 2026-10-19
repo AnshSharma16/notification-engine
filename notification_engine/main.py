@@ -1,30 +1,24 @@
-"""
-main.py — FastAPI application: lifespan, dependency injection, and route handlers.
-
-[OPT-4] Exception handling is now fully delegated to ExceptionMiddleware.
-        The three individual @app.exception_handler decorators are removed;
-        a single middleware covers all request paths including 404s that never
-        reach any handler.
-
-No other architectural changes — routes, lifespan, and dependency injection
-are identical to the original.
-"""
-
-from __future__ import annotations
-
 import logging
-import uuid
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+from typing import Any
+from uuid import UUID
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import JSONResponse
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, AsyncSession
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from config import settings
-from database import build_engine, build_session_factory, create_all_tables, verify_connectivity
-from middleware import ExceptionMiddleware  # [OPT-4]
-from schemas import AcceptedResponse, ErrorDetail, NotificationRequest, NotificationResponse
+from notification_engine.app.core.config import settings
+from database import (
+    build_engine,
+    build_session_factory,
+    create_all_tables,
+    verify_connectivity,
+)
+from schemas import (
+    AcceptedResponse,
+    NotificationRequest,
+    NotificationResponse,
+)
 from services import NotificationService
 
 logging.basicConfig(
@@ -33,42 +27,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Application state container
-# ---------------------------------------------------------------------------
-
-class AppState:
-    engine: AsyncEngine
-    session_factory: async_sessionmaker[AsyncSession]
-    notification_service: NotificationService
-
-
-# ---------------------------------------------------------------------------
-# Lifespan (unchanged)
-# ---------------------------------------------------------------------------
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    logger.info("Starting %s v%s …", settings.app_title, settings.app_version)
+    engine = build_engine()
+    try:
+        await verify_connectivity(engine)
+        await create_all_tables(engine)
 
-    state = AppState()
-    state.engine = build_engine()
-    await verify_connectivity(state.engine)
-    await create_all_tables(state.engine)
-    state.session_factory = build_session_factory(state.engine)
-    state.notification_service = NotificationService(state.session_factory)
+        session_factory = build_session_factory(engine)
 
-    app.state.engine = state.engine
-    app.state.session_factory = state.session_factory
-    app.state.notification_service = state.notification_service
+        app.state.engine = engine
+        app.state.session_factory = session_factory
+        app.state.notification_service = NotificationService(session_factory)
 
-    logger.info("Startup complete. Ready to accept traffic.")
-    yield
+        logger.info("Application startup complete.")
+        yield
 
-    logger.info("Shutdown: draining connection pool …")
-    await state.engine.dispose()
-    logger.info("Engine disposed. Goodbye.")
+    finally:
+        logger.info("Shutdown: draining connection pool …")
+        await engine.dispose()
+        logger.info("Engine disposed. Goodbye.")
 
 
 # ---------------------------------------------------------------------------

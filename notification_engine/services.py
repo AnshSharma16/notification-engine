@@ -29,9 +29,9 @@ from typing import Callable, Coroutine, Any, Protocol
 from fastapi import BackgroundTasks
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
-from config import settings
+from notification_engine.app.core.config import settings
 from database import get_session
-from models import Notification, NotificationChannel, NotificationStatus
+from notification_engine.app.models.models import Notification, NotificationChannel, NotificationStatus
 from repositories import NotificationRepository
 from schemas import NotificationRequest, NotificationResponse
 

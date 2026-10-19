@@ -1,32 +1,3 @@
-"""
-repositories.py — Generic repository interface + NotificationRepository.
-
-Architecture principles enforced here:
-  - `BaseRepository` is an ABC that defines the structural contract; concrete
-    repositories MUST implement every abstract method or Python will refuse to
-    instantiate them.
-  - `NotificationRepository` holds zero global/class-level state. All state
-    (session, model class) is injected through `__init__` so the instance is
-    trivially testable by swapping in a mock session.
-  - Every public method is fully typed so mypy / pyright can catch callsite
-    mistakes at CI time rather than at runtime in production.
-  - Raw SQL is never used; all queries go through SQLAlchemy's expression API
-    so the query planner receives parameterised statements and avoids injection.
-
-Performance optimisations added:
-  [OPT-1] bulk_create()       — INSERT … ON CONFLICT DO UPDATE via
-                                 session.execute(insert(), batch) avoids
-                                 N individual round-trips.
-  [OPT-1] bulk_mark_status()  — executemany()-style UPDATE batch collapses
-                                 N mark_status() calls into one DB round-trip.
-  [OPT-5] get_pending()       — FOR UPDATE SKIP LOCKED prevents concurrent
-                                 workers from racing on the same rows; rows
-                                 held by another transaction are skipped
-                                 atomically rather than blocked.
-"""
-
-from __future__ import annotations
-
 import logging
 import uuid
 from abc import ABC, abstractmethod
@@ -37,7 +8,7 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert  # [OPT-1] upsert dialect
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import Notification, NotificationStatus
+from notification_engine.app.models.models import Notification, NotificationStatus
 
 logger = logging.getLogger(__name__)
 
@@ -70,10 +41,6 @@ class BaseRepository(ABC, Generic[T]):
 # ---------------------------------------------------------------------------
 
 class NotificationRepository(BaseRepository[Notification]):
-    """
-    All database operations for the `notifications` table.
-    Session injected at construction; zero class-level state.
-    """
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -125,22 +92,11 @@ class NotificationRepository(BaseRepository[Notification]):
     # ------------------------------------------------------------------
 
     async def bulk_create(self, entities: Sequence[Notification]) -> int:
-        """
-        INSERT … ON CONFLICT DO UPDATE (upsert) for a batch of notifications.
-
-        Uses the PostgreSQL-specific `insert()` dialect so the entire batch
-        lands in a single network round-trip regardless of batch size.
-        The ON CONFLICT clause targets the primary key; duplicate IDs are
-        silently updated rather than raising IntegrityError, which makes
-        idempotent re-ingestion safe.
-
-        Returns the number of rows written.
-        """
+       
         if not entities:
             return 0
 
-        # Build a plain-dict list — SQLAlchemy core insert does not accept ORM
-        # instances directly, and converting to dicts is cheaper than merge().
+       
         rows = [
             {
                 "id": e.id,
@@ -159,7 +115,7 @@ class NotificationRepository(BaseRepository[Notification]):
             for e in entities
         ]
 
-        # [OPT-1] Single INSERT … ON CONFLICT DO UPDATE — one round-trip.
+        
         stmt = pg_insert(Notification).values(rows)
         upsert_stmt = stmt.on_conflict_do_update(
             index_elements=["id"],
@@ -179,24 +135,10 @@ class NotificationRepository(BaseRepository[Notification]):
         self,
         updates: Sequence[tuple[uuid.UUID, NotificationStatus, str | None]],
     ) -> int:
-        """
-        Batch status transitions using a single UPDATE … WHERE id = ANY(:ids)
-        grouped by (status, error_detail) — far fewer round-trips than N
-        individual mark_status() calls.
-
-        `updates` is a list of (notification_id, new_status, error_detail|None).
-
-        Strategy: group by (status, error_detail) so identical transitions
-        collapse into one UPDATE … WHERE id = ANY([…]) statement. Heterogeneous
-        batches still beat N individual updates because only distinct
-        (status, error) pairs become distinct statements.
-
-        Returns total rows affected.
-        """
+    
         if not updates:
             return 0
 
-        # Group by (status, error_detail) to minimise distinct statements.
         groups: dict[tuple[NotificationStatus, str | None], list[uuid.UUID]] = {}
         for nid, st, err in updates:
             key = (st, err)
@@ -210,15 +152,13 @@ class NotificationRepository(BaseRepository[Notification]):
             if err is not None:
                 values["error_detail"] = err
 
-            # [OPT-1] WHERE id = ANY(:ids) — single statement per group,
-            # regardless of how many ids are in the batch.
+            
             stmt = (
                 update(Notification)
                 .where(Notification.id.in_(ids))
                 .values(**values)
                 .execution_options(synchronize_session=False)
-                # synchronize_session=False skips the expensive ORM
-                # identity-map sync; safe here because we flush immediately.
+                
             )
             result = await self._session.execute(stmt)
             total += result.rowcount  # type: ignore[attr-defined]
@@ -232,18 +172,7 @@ class NotificationRepository(BaseRepository[Notification]):
     # ------------------------------------------------------------------
 
     async def get_pending(self, *, limit: int = 50) -> Sequence[Notification]:
-        """
-        Fetch PENDING rows for background processing.
-
-        [OPT-5] FOR UPDATE SKIP LOCKED:
-          Without this, two concurrent workers both SELECT the same PENDING
-          rows, then race on the UPDATE. With SKIP LOCKED, each worker gets
-          a disjoint, non-overlapping set of rows. Rows held by another
-          in-progress transaction are atomically skipped — zero blocking.
-
-          This is the standard PostgreSQL pattern for building a queue out
-          of a relational table without an external broker.
-        """
+       
         stmt = (
             select(Notification)
             .where(Notification.status == NotificationStatus.PENDING)
@@ -262,12 +191,7 @@ class NotificationRepository(BaseRepository[Notification]):
         error_detail: str | None = None,
         increment_retry: bool = False,
     ) -> Notification | None:
-        """
-        Atomic single-row status transition via UPDATE … RETURNING.
-
-        Retained for single-row callers (dispatch, status probe).
-        High-volume batch callers should prefer bulk_mark_status().
-        """
+        
         values: dict[str, Any] = {
             "status": status,
             "updated_at": datetime.now(timezone.utc),
