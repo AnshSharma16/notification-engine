@@ -6,7 +6,7 @@ from app.models.models import Notification
 
 
 class SMSAdapter(NotificationAdapter):
-    async def send(self, notification: Notification) -> None:
+    async def send(self, notification: Notification) -> bool:
         """Submit an SMS through the configured provider."""
 
         payload = {
@@ -28,3 +28,4 @@ class SMSAdapter(NotificationAdapter):
                 headers=headers,
             )
             response.raise_for_status()
+        return True

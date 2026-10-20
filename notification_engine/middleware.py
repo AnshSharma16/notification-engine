@@ -1,31 +1,3 @@
-"""
-middleware.py — Global exception middleware for the Notification Engine.
-
-[OPT-4] Replaces three discrete @app.exception_handler decorators with a
-single Starlette BaseHTTPMiddleware subclass that:
-
-  1. Generates a unique X-Request-ID for every inbound request and injects
-     it into the response headers + structured log output.
-  2. Catches domain-specific exceptions (RateLimitException,
-     GatewayTimeoutException) and maps them to canonical HTTP status codes.
-  3. Catches FastAPI's RequestValidationError with the same JSON shape.
-  4. Catches all unhandled Exception as 500, logging full tracebacks with
-     the request_id for post-hoc correlation in log aggregators.
-  5. Never leaks internal stack traces to the client.
-
-Why middleware instead of @exception_handler?
-  - A middleware runs for EVERY request, including 404s from the router
-    that never reach any handler, and lifespan errors.
-  - Centralised logging with request_id makes log correlation trivial.
-  - A single code path to test rather than N scattered handlers.
-
-Trade-off: BaseHTTPMiddleware adds a thin coroutine overhead per request.
-For high-QPS APIs consider Starlette's pure ASGI middleware instead; the
-interface is identical, just noisier to write.
-"""
-
-from __future__ import annotations
-
 import logging
 import time
 import uuid
@@ -37,14 +9,9 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
-from schemas import ErrorDetail
+from app.schemas.notification import ErrorDetails
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# [OPT-4] Custom domain exceptions
-# ---------------------------------------------------------------------------
 
 class AppBaseException(Exception):
     """Root for all application-level exceptions caught by the middleware."""
@@ -53,12 +20,7 @@ class AppBaseException(Exception):
 
 
 class RateLimitException(AppBaseException):
-    """
-    Raised when a client exceeds the configured request budget.
 
-    The middleware maps this to 429 Too Many Requests and adds a
-    Retry-After header so well-behaved clients back off automatically.
-    """
     http_status = status.HTTP_429_TOO_MANY_REQUESTS
     error_code = "RATE_LIMIT_EXCEEDED"
 
@@ -101,10 +63,7 @@ _REQUEST_ID_HEADER = "X-Request-ID"
 
 
 def _get_or_generate_request_id(request: Request) -> str:
-    """
-    Honour an inbound X-Request-ID (for distributed tracing correlation)
-    or generate a fresh UUID4 if none is provided.
-    """
+
     return request.headers.get(_REQUEST_ID_HEADER) or str(uuid.uuid4())
 
 
@@ -113,13 +72,7 @@ def _get_or_generate_request_id(request: Request) -> str:
 # ---------------------------------------------------------------------------
 
 class ExceptionMiddleware(BaseHTTPMiddleware):
-    """
-    Single catch-all middleware that:
-      - Assigns a request_id to every request.
-      - Logs method, path, status, and latency in a structured format.
-      - Maps known exceptions → standard JSON error envelopes.
-      - Ensures unknown exceptions never surface raw stack traces.
-    """
+
 
     async def dispatch(
         self,

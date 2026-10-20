@@ -9,7 +9,7 @@ from app.models.models import Notification
 
 
 class EmailAdapter(NotificationAdapter):
-    async def send(self, notification: Notification) -> None:
+    async def send(self, notification: Notification) -> bool:
         """Send an email notification through SMTP."""
 
         message = EmailMessage()
@@ -32,3 +32,4 @@ class EmailAdapter(NotificationAdapter):
                 server.send_message(message)
 
         await asyncio.to_thread(send_email)
+        return True

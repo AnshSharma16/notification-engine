@@ -3,7 +3,7 @@ from app.models.models import Notification
 
 
 class PushAdapter(NotificationAdapter):
-    async def send(self, notification: Notification) -> None:
+    async def send(self, notification: Notification) -> bool:
         """Send a push notification through a configured provider."""
 
         raise NotImplementedError(

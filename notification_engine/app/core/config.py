@@ -4,7 +4,6 @@ config.py — Centralised, environment-driven settings via Pydantic v2 BaseSetti
 All tunables live here so nothing is hard-coded anywhere in the application.
 """
 
-from __future__ import annotations
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 

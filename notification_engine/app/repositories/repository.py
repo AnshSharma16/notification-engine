@@ -2,7 +2,7 @@ import logging
 from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.models import Notification
+from app.models.models import Notification, NotificationStatus
 
 logger = logging.getLogger(__name__)
 class NotificationRepository:
@@ -48,3 +48,34 @@ class NotificationRepository:
             return True
 
     
+    async def mark_status(
+        self,
+        notification_id: UUID,
+        status: NotificationStatus,
+        *,
+        error_detail: str | None = None,
+        increment_retry: bool = False,
+    ) -> Notification | None:
+        notification = await self.get_by_id(notification_id)
+
+        if notification is None:
+            return None
+
+        notification.status = status
+
+        if error_detail is not None:
+            notification.error_detail = error_detail
+
+        if increment_retry:
+            notification.retry_count += 1
+
+        await self._session.flush()
+        await self._session.refresh(notification)
+
+        logger.info(
+        "Notification %s status updated to %s",
+        notification_id,
+        status.value,
+        )
+
+        return notification

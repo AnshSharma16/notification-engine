@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from notification_engine.app.models.models import NotificationChannel, NotificationStatus
+from app.models.models import NotificationChannel, NotificationStatus
 
 
 class NotificationRequest(BaseModel):

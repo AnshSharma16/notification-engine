@@ -9,13 +9,16 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from notification_engine.app.core.config import settings
+
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 def build_engine() -> AsyncEngine:
     return create_async_engine(
-        settings.DATABASE_URL,
-        echo=settings.DEBUG,
+        settings.database_url,
+        echo=settings.db_echo,
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
     )
 
 
@@ -35,22 +38,20 @@ def build_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSessio
 # Async context manager — the ONLY sanctioned way to acquire a session
 # ---------------------------------------------------------------------------
 
+
 @asynccontextmanager
-async def get_session():
-    async with AsyncSessionLocal() as session:
+async def get_session(
+    session_factory: async_sessionmaker[AsyncSession],
+):
+    async with session_factory() as session:
         try:
             yield session
             await session.commit()
-        except SQLAlchemyError as exc:
+        except Exception:
             await session.rollback()
-            logger.exception("DB transaction rolled back due to SQLAlchemy error: %s", exc)
+            logger.exception("Database transaction rolled back.")
             raise
-        except Exception as exc:
-            await session.rollback()
-            logger.exception("DB transaction rolled back due to unexpected error: %s", exc)
-            raise
-        finally:
-            await session.close()
+
 
 async def verify_connectivity(engine: AsyncEngine) -> None:
     

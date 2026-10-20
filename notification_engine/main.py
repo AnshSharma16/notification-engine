@@ -1,25 +1,35 @@
+
 import logging
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, AsyncIterator
 from uuid import UUID
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, status
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    status,
+)
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine
 
-from notification_engine.app.core.config import settings
-from database import (
+from app.core.config import settings
+from app.database.session import (
     build_engine,
     build_session_factory,
-    create_all_tables,
     verify_connectivity,
 )
-from schemas import (
+from app.models.models import Base
+from app.schemas.notification import (
     AcceptedResponse,
     NotificationRequest,
     NotificationResponse,
 )
-from services import NotificationService
+from app.services.services import NotificationService
+from middleware import ExceptionMiddleware
 
 logging.basicConfig(
     level=logging.DEBUG if settings.debug else logging.INFO,
@@ -27,71 +37,49 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     engine = build_engine()
+
     try:
         await verify_connectivity(engine)
-        await create_all_tables(engine)
 
         session_factory = build_session_factory(engine)
-
         app.state.engine = engine
         app.state.session_factory = session_factory
         app.state.notification_service = NotificationService(session_factory)
 
         logger.info("Application startup complete.")
         yield
-
     finally:
-        logger.info("Shutdown: draining connection pool …")
+        logger.info("Shutting down database engine.")
         await engine.dispose()
-        logger.info("Engine disposed. Goodbye.")
 
-
-# ---------------------------------------------------------------------------
-# FastAPI application instance
-# ---------------------------------------------------------------------------
 
 app = FastAPI(
     title=settings.app_title,
     version=settings.app_version,
     description=(
-        "Enterprise-grade Distributed Notification Engine. "
-        "Ingest → persist → dispatch asynchronously via channel adapters."
+        "Notification Engine: persist notifications and dispatch "
+        "through channel adapters."
     ),
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
 )
 
-# [OPT-4] Single middleware replaces three @exception_handler decorators.
-# Must be added AFTER the app is constructed but BEFORE any routes are defined
-# so it wraps the entire ASGI chain.
 app.add_middleware(ExceptionMiddleware)
 
-
-# ---------------------------------------------------------------------------
-# Dependency providers (unchanged)
-# ---------------------------------------------------------------------------
 
 def get_notification_service(request: Request) -> NotificationService:
     return request.app.state.notification_service
 
 
-# ---------------------------------------------------------------------------
-# Routes — v1 (unchanged external contract)
-# ---------------------------------------------------------------------------
-
 @app.post(
     "/api/v1/notify",
     response_model=AcceptedResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    summary="Ingest a notification",
-    description=(
-        "Accepts a notification request, persists it with PENDING status, "
-        "schedules asynchronous delivery, and immediately returns 202 Accepted."
-    ),
     tags=["Notifications"],
 )
 async def ingest_notification(
@@ -99,27 +87,28 @@ async def ingest_notification(
     background_tasks: BackgroundTasks,
     service: NotificationService = Depends(get_notification_service),
 ) -> AcceptedResponse:
-    notification_response = await service.enqueue(request, background_tasks)
-    return AcceptedResponse(notification=notification_response)
+    notification = await service.enqueue(request, background_tasks)
+    return AcceptedResponse(notification=notification)
 
 
 @app.get(
     "/api/v1/notify/{notification_id}",
     response_model=NotificationResponse,
     status_code=status.HTTP_200_OK,
-    summary="Get notification status",
     tags=["Notifications"],
 )
 async def get_notification_status(
-    notification_id: uuid.UUID,
+    notification_id: UUID,
     service: NotificationService = Depends(get_notification_service),
 ) -> NotificationResponse:
     response = await service.get_status(notification_id)
+
     if response is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Notification '{notification_id}' not found.",
         )
+
     return response
 
 
@@ -127,7 +116,6 @@ async def get_notification_status(
     "/api/v1/notify",
     response_model=list[NotificationResponse],
     status_code=status.HTTP_200_OK,
-    summary="List notifications",
     tags=["Notifications"],
 )
 async def list_notifications(
@@ -140,12 +128,15 @@ async def list_notifications(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="limit must be between 1 and 500.",
         )
+
+    if offset < 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="offset must be non-negative.",
+        )
+
     return await service.list_notifications(limit=limit, offset=offset)
 
-
-# ---------------------------------------------------------------------------
-# Health / readiness probes (unchanged)
-# ---------------------------------------------------------------------------
 
 @app.get("/health", tags=["Ops"], include_in_schema=False)
 async def health() -> dict[str, str]:
@@ -153,16 +144,17 @@ async def health() -> dict[str, str]:
 
 
 @app.get("/ready", tags=["Ops"], include_in_schema=False)
-async def readiness(request: Request) -> dict[str, Any]:
-    from sqlalchemy import text
+async def readiness(request: Request) -> Any:
     engine: AsyncEngine = request.app.state.engine
+
     try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
+        async with engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+
         return {"status": "ready", "db": "ok"}
-    except Exception as exc:
-        logger.error("Readiness check failed: %s", exc)
-        return JSONResponse(  # type: ignore[return-value]
+    except Exception:
+        logger.exception("Readiness check failed")
+        return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={"status": "not ready", "db": "unreachable"},
         )

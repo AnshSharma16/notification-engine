@@ -8,6 +8,7 @@ from sqlalchemy import (
     Index,
     String,
     Text,
+    func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -40,21 +41,27 @@ class Notification(Base):
     recipient: Mapped[str] = mapped_column(String(320), nullable=False)
 
     channel: Mapped[NotificationChannel] = mapped_column(
-        Enum(NotificationChannel, name="notification_channel"),
-        nullable=False,
-        values_callable=lambda enum_cls: [e.value for e in enum_cls],
-    )
+    Enum(
+        NotificationChannel,
+        name="notification_channel",
+        values_callable=lambda enum_cls: [item.value for item in enum_cls],
+    ),
+    nullable=False,
+)
 
     subject: Mapped[str | None] = mapped_column(String(998), nullable=True)
 
     body: Mapped[str] = mapped_column(Text, nullable=False)
 
     status: Mapped[NotificationStatus] = mapped_column(
-        Enum(NotificationStatus, name="notification_status"),
-        nullable=False,
-        default=NotificationStatus.PENDING,
-        server_default=NotificationStatus.PENDING.name,
-        values_callable=lambda enum_cls: [e.value for e in enum_cls],
+    Enum(
+        NotificationStatus,
+        name="notification_status",
+        values_callable=lambda enum_cls: [item.value for item in enum_cls],
+    ),
+    nullable=False,
+    default=NotificationStatus.PENDING,
+    server_default=NotificationStatus.PENDING.value,
     )
 
     priority: Mapped[int] = mapped_column(default=5, nullable=False)  # 1 (hi) – 10 (lo)
